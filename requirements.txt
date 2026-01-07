@@ -1,0 +1,49 @@
+# Core ML/DL
+torch>=2.0.0
+torchvision>=0.15.0
+timm>=0.9.0  # For modern pretrained models
+
+# Data handling
+numpy>=1.24.0
+pandas>=2.0.0
+pillow>=10.0.0
+scikit-learn>=1.3.0
+
+# Kaggle dataset download
+kagglehub>=0.2.0
+
+# Configuration management
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Experiment tracking
+tqdm>=4.65.0
+
+# Model interpretability
+captum>=0.6.0  # For Grad-CAM and other attribution methods
+
+# API and deployment
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6  # For file uploads
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Jupyter notebooks
+jupyter>=1.0.0
+ipykernel>=6.25.0
+
+# Type checking and linting
+mypy>=1.5.0
+ruff>=0.1.0
+
+# Docker support (for generating requirements in container)
+# docker>=6.1.0  # Optional, only if managing Docker from Python
+

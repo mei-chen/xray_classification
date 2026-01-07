@@ -1,0 +1,112 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Data files (large datasets should not be in git)
+data/raw/
+data/processed/
+data/interim/
+data/external/
+*.csv
+*.parquet
+*.h5
+*.hdf5
+
+# Model files (large model weights)
+models/*.pt
+models/*.pth
+models/*.onnx
+models/*.pkl
+models/*.h5
+*.pt
+*.pth
+*.onnx
+
+# Logs
+logs/
+*.log
+
+# Reports and figures (regeneratable)
+reports/figures/*.png
+reports/figures/*.jpg
+reports/figures/*.svg
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

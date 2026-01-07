@@ -1,0 +1,30 @@
+{
+  "accuracy": 0.7707279096924874,
+  "auc_macro": 0.9077520169526014,
+  "auc_scores": {
+    "Normal": 0.8395025317288092,
+    "Pneumonia": 0.9867482359875869,
+    "Tuberculosis": 0.8970052831414081
+  },
+  "num_samples": 2569,
+  "per_class": {
+    "Normal": {
+      "precision": 0.6480836236933798,
+      "recall": 0.8043243243243243,
+      "f1-score": 0.7178002894356006,
+      "support": 925
+    },
+    "Pneumonia": {
+      "precision": 0.7754010695187166,
+      "recall": 1.0,
+      "f1-score": 0.8734939759036144,
+      "support": 580
+    },
+    "Tuberculosis": {
+      "precision": 0.974739970282318,
+      "recall": 0.6165413533834586,
+      "f1-score": 0.7553252734599885,
+      "support": 1064
+    }
+  }
+}

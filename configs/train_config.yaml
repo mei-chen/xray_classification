@@ -1,0 +1,130 @@
+# =============================================================================
+# Chest X-Ray Classification Training Configuration
+# =============================================================================
+# All hyperparameters and settings for reproducible training runs
+
+# Random seed for reproducibility
+seed: 42
+
+# Data configuration
+data:
+  # Path to the dataset (pre-split with train/val/test folders)
+  raw_data_path: "data/raw/chest-xray-dataset"
+  processed_data_path: "data/processed"
+  
+  # Image settings
+  image_size: 224
+  num_channels: 3
+  
+  # Class labels
+  classes:
+    - "Normal"
+    - "Pneumonia"
+    - "Tuberculosis"
+  num_classes: 3
+  
+  # Data split ratios
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # Dataloader settings
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+
+# Data augmentation configuration
+augmentation:
+  # Training augmentations
+  train:
+    horizontal_flip: true
+    rotation_degrees: 15
+    brightness_range: [0.8, 1.2]
+    contrast_range: [0.8, 1.2]
+    random_crop: true
+    normalize:
+      mean: [0.485, 0.456, 0.406]  # ImageNet stats
+      std: [0.229, 0.224, 0.225]
+  
+  # Validation/Test augmentations (only resize and normalize)
+  eval:
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+# Model configuration
+model:
+  # Architecture: efficientnet_b0, efficientnet_b1, resnet50, etc.
+  architecture: "efficientnet_b0"
+  
+  # Use pretrained weights from ImageNet
+  pretrained: true
+  
+  # Freeze backbone initially for transfer learning
+  freeze_backbone: true
+  unfreeze_at_epoch: 5  # Unfreeze after N epochs
+  
+  # Classification head
+  dropout: 0.3
+  use_bn_before_classifier: true
+
+# Training configuration
+training:
+  # Number of epochs
+  epochs: 50
+  
+  # Optimizer settings
+  optimizer:
+    name: "adamw"
+    learning_rate: 0.001
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+  
+  # Learning rate scheduler
+  scheduler:
+    name: "cosine_warmup"
+    warmup_epochs: 3
+    min_lr: 0.00001
+  
+  # Loss function
+  loss:
+    name: "cross_entropy"
+    label_smoothing: 0.1
+    use_class_weights: true  # Handle class imbalance
+  
+  # Mixed precision training
+  use_amp: true
+  
+  # Gradient clipping
+  gradient_clip_val: 1.0
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 10
+    monitor: "val_f1"
+    mode: "max"
+  
+  # Model checkpointing
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_f1"
+    mode: "max"
+    save_last: true
+
+# Paths
+paths:
+  model_dir: "models"
+  reports_dir: "reports"
+  figures_dir: "reports/figures"
+  logs_dir: "logs"
+
+# Hardware
+device: "auto"  # "auto", "cuda", "mps", "cpu"
+
+# Logging
+logging:
+  level: "INFO"
+  log_every_n_steps: 10
+  save_predictions: true
+

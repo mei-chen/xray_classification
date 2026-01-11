@@ -1,0 +1,322 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+% Colors
+\definecolor{primary}{RGB}{41, 128, 185}
+\definecolor{accent}{RGB}{231, 76, 60}
+\definecolor{success}{RGB}{39, 174, 96}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    urlcolor=primary,
+    citecolor=primary
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Chest X-Ray Classification}
+\lhead{Technical Report}
+\rfoot{Page \thepage}
+
+% Title formatting
+\titleformat{\section}{\Large\bfseries\color{primary}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+
+% Document
+\begin{document}
+
+% Title
+\begin{center}
+    {\LARGE\bfseries\color{primary} Chest X-Ray Classification System}\\[0.5em]
+    {\large Technical Report}\\[1em]
+    {\normalsize Deep Learning for Medical Image Diagnosis}\\[0.5em]
+    \today
+\end{center}
+
+\vspace{1em}
+
+%==============================================================================
+\section{Executive Summary}
+%==============================================================================
+
+This report presents a deep learning system for classifying chest X-ray images into three diagnostic categories: \textbf{Normal}, \textbf{Pneumonia}, and \textbf{Tuberculosis}. The system achieves \textbf{90.8\% macro AUC} on a held-out test set of 2,569 images, with particularly strong performance on Pneumonia detection (98.7\% AUC, 100\% recall).
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Score} \\
+\midrule
+Overall Accuracy & 77.1\% \\
+Macro AUC-ROC & 90.8\% \\
+Test Samples & 2,569 \\
+\bottomrule
+\end{tabular}
+\caption{Summary of model performance on test set.}
+\end{table}
+
+%==============================================================================
+\section{EDA Findings and Modeling Choices}
+%==============================================================================
+
+\subsection{Dataset Characteristics}
+
+The dataset consists of chest X-ray images from three classes with notable class imbalance:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Class} & \textbf{Train} & \textbf{Test} & \textbf{Proportion} \\
+\midrule
+Normal & -- & 925 & 36.0\% \\
+Pneumonia & -- & 580 & 22.6\% \\
+Tuberculosis & -- & 1,064 & 41.4\% \\
+\bottomrule
+\end{tabular}
+\caption{Class distribution in test set (imbalance ratio $\approx$ 1.8$\times$).}
+\end{table}
+
+\subsection{Key EDA Findings}
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Class Imbalance}: Tuberculosis samples are nearly 2$\times$ more common than Pneumonia, requiring weighted loss functions and balanced sampling.
+    
+    \item \textbf{Image Properties}: Variable image sizes and aspect ratios; most images are grayscale requiring RGB conversion for transfer learning.
+    
+    \item \textbf{Visual Patterns}: Pneumonia shows diffuse bilateral infiltrates; Tuberculosis often shows upper lobe consolidation and cavitation; Normal cases show clear lung fields.
+\end{enumerate}
+
+\subsection{Modeling Choices}
+
+Based on EDA findings, the following design decisions were made:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Decision} & \textbf{Rationale} \\
+\midrule
+EfficientNet-B0 backbone & Best accuracy/efficiency trade-off \\
+Class-weighted loss & Address 1.8$\times$ imbalance \\
+Weighted random sampling & Balance mini-batches \\
+Label smoothing (0.1) & Reduce overconfidence \\
+Progressive unfreezing & Better transfer learning \\
+Data augmentation & Increase effective dataset size \\
+\bottomrule
+\end{tabular}
+\caption{Key modeling decisions and their rationale.}
+\end{table}
+
+%==============================================================================
+\section{Final Metrics and Calibration}
+%==============================================================================
+
+\subsection{Per-Class Performance}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{AUC} & \textbf{Support} \\
+\midrule
+Normal & 64.8\% & 80.4\% & 71.8\% & 84.0\% & 925 \\
+Pneumonia & 77.5\% & \textbf{100\%} & 87.3\% & \textbf{98.7\%} & 580 \\
+Tuberculosis & \textbf{97.5\%} & 61.7\% & 75.5\% & 89.7\% & 1,064 \\
+\midrule
+\textbf{Macro Avg} & 79.9\% & 80.7\% & 78.2\% & \textbf{90.8\%} & 2,569 \\
+\bottomrule
+\end{tabular}
+\caption{Detailed classification metrics by class.}
+\end{table}
+
+\subsection{Confusion Matrix Analysis}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\textwidth]{confusion_matrix.png}
+\caption{Normalized confusion matrix showing prediction patterns.}
+\end{figure}
+
+\textbf{Key observations}:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Pneumonia}: Perfect recall (100\%)---no missed cases, critical for screening.
+    \item \textbf{Tuberculosis}: High precision (97.5\%)---very few false positives.
+    \item \textbf{Normal}: Some confusion with Pneumonia (18\%), expected given visual similarity.
+    \item \textbf{TB$\rightarrow$Normal confusion}: 38\% of TB cases misclassified as Normal, indicating room for improvement.
+\end{itemize}
+
+\subsection{ROC Curves}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{roc_curves.png}
+\caption{One-vs-Rest ROC curves for each class.}
+\end{figure}
+
+The strong AUC scores (all $>$0.84) indicate the model learns discriminative features. Pneumonia's near-perfect AUC (0.987) suggests it has the most distinctive radiographic features.
+
+\subsection{Calibration}
+
+The model incorporates several calibration techniques:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Label smoothing} (0.1) prevents overconfident predictions
+    \item \textbf{Temperature scaling} can be applied post-hoc for probability calibration
+    \item Softmax outputs provide probability estimates for clinical decision support
+\end{itemize}
+
+%==============================================================================
+\section{Robustness Analysis}
+%==============================================================================
+
+While formal robustness testing (Task 3) was not completed, the following robustness considerations were addressed:
+
+\subsection{Training Robustness}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Data augmentation}: Random flips, rotations ($\pm$15°), brightness/contrast jitter, and affine transforms simulate real-world variation.
+    \item \textbf{Dropout} (0.3): Prevents overfitting to training distribution.
+    \item \textbf{Early stopping}: Prevents overfitting with patience of 10 epochs.
+\end{itemize}
+
+\subsection{Potential Vulnerabilities}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Domain shift}: Performance may degrade on X-rays from different scanners, hospitals, or patient demographics.
+    \item \textbf{TB$\rightarrow$Normal misclassification}: 38\% of TB cases misclassified suggests sensitivity to subtle TB patterns.
+    \item \textbf{Image quality}: Model assumes reasonable X-ray quality; heavily degraded images may fail.
+\end{itemize}
+
+\subsection{Recommended Future Testing}
+\begin{enumerate}[leftmargin=*]
+    \item Test on external datasets (e.g., NIH ChestX-ray14, CheXpert)
+    \item Adversarial robustness evaluation
+    \item Noise and blur perturbation testing
+    \item Subgroup analysis by patient demographics (if available)
+\end{enumerate}
+
+%==============================================================================
+\section{Explainability Insights}
+%==============================================================================
+
+\subsection{Grad-CAM Visualization}
+
+Gradient-weighted Class Activation Mapping (Grad-CAM) was implemented to visualize which regions of the X-ray influence predictions.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{gradcam_analysis.png}
+\caption{Grad-CAM attention maps for sample predictions. Bright regions indicate high importance.}
+\end{figure}
+
+\subsection{Clinical Alignment}
+
+The attention maps reveal clinically meaningful patterns:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{8cm}}
+\toprule
+\textbf{Class} & \textbf{Model Attention Focus} \\
+\midrule
+Normal & Clear lung fields, absence of pathology markers \\
+Pneumonia & Diffuse infiltrates, bilateral opacities, lower/middle zones \\
+Tuberculosis & Upper lobe consolidation, apical regions, cavitary patterns \\
+\bottomrule
+\end{tabular}
+\caption{Grad-CAM attention patterns align with known radiographic findings.}
+\end{table}
+
+These patterns align with established radiological knowledge, increasing confidence in the model's decision-making process.
+
+%==============================================================================
+\section{Deployment Plan}
+%==============================================================================
+
+\subsection{API Architecture}
+
+A production-ready REST API was implemented using FastAPI:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{6cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Description} \\
+\midrule
+\texttt{/health} & GET & Service health check \\
+\texttt{/model/info} & GET & Model metadata (architecture, classes) \\
+\texttt{/predict} & POST & Single image classification \\
+\texttt{/predict/batch} & POST & Batch classification ($\leq$10 images) \\
+\texttt{/predict/explain} & POST & Classification + Grad-CAM visualization \\
+\bottomrule
+\end{tabular}
+\caption{API endpoint summary.}
+\end{table}
+
+\subsection{Containerization}
+
+Docker deployment with:
+\begin{itemize}[leftmargin=*]
+    \item Multi-stage build for minimal image size
+    \item Non-root user for security
+    \item Health check endpoint for orchestration
+    \item CORS middleware for frontend integration
+\end{itemize}
+
+\subsection{Deployment Commands}
+
+\begin{verbatim}
+# Local development
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+
+# Docker deployment
+docker build -t xray-classifier .
+docker run -p 8000:8000 xray-classifier
+\end{verbatim}
+
+\subsection{Clinical Integration Considerations}
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Decision support, not replacement}: Model outputs should assist, not replace, radiologist judgment.
+    \item \textbf{Confidence thresholds}: Low-confidence predictions should be flagged for expert review.
+    \item \textbf{Audit logging}: All predictions should be logged for retrospective analysis.
+    \item \textbf{Regulatory}: FDA 510(k) clearance required for clinical use in the US.
+\end{enumerate}
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+
+This project demonstrates a complete ML pipeline from data exploration to deployment-ready API. Key achievements:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Strong discriminative performance}: 90.8\% macro AUC across three classes
+    \item \textbf{Perfect Pneumonia recall}: Zero missed cases in test set
+    \item \textbf{Interpretable predictions}: Grad-CAM visualizations align with clinical knowledge
+    \item \textbf{Production-ready}: Containerized API with explainability endpoints
+\end{itemize}
+
+\textbf{Limitations}: The main weakness is TB$\rightarrow$Normal confusion (38\%), which could be addressed with additional TB training data, class-specific augmentation, or ensemble methods.
+
+\vspace{1em}
+\hrule
+\vspace{0.5em}
+\small\textit{Built with PyTorch, timm, FastAPI, and best MLOps practices.}
+
+\end{document}
+

@@ -1,0 +1,50 @@
+{
+  "Normal": {
+    "f1_optimal": {
+      "threshold": 0.2698889970779419,
+      "precision": 0.6215301286391334,
+      "recall": 0.9924324324324324,
+      "f1": 0.7643630260717201
+    },
+    "high_sensitivity": {
+      "threshold": 0.2904324531555176,
+      "description": "Use for screening (minimize false negatives)"
+    },
+    "high_specificity": {
+      "threshold": 0.9,
+      "description": "Use for confirmation (minimize false positives)"
+    }
+  },
+  "Pneumonia": {
+    "f1_optimal": {
+      "threshold": 0.1765466183423996,
+      "precision": 0.7785234899328859,
+      "recall": 1.0,
+      "f1": 0.8754716931907441
+    },
+    "high_sensitivity": {
+      "threshold": 0.6768099069595337,
+      "description": "Use for screening (minimize false negatives)"
+    },
+    "high_specificity": {
+      "threshold": 0.6981200575828552,
+      "description": "Use for confirmation (minimize false positives)"
+    }
+  },
+  "Tuberculosis": {
+    "f1_optimal": {
+      "threshold": 0.24959500133991241,
+      "precision": 0.7842205323193916,
+      "recall": 0.775375939849624,
+      "f1": 0.7797731518999718
+    },
+    "high_sensitivity": {
+      "threshold": 0.09386258572340012,
+      "description": "Use for screening (minimize false negatives)"
+    },
+    "high_specificity": {
+      "threshold": 0.35991451144218445,
+      "description": "Use for confirmation (minimize false positives)"
+    }
+  }
+}

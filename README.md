@@ -1,5 +1,7 @@
 # Chest X-Ray Classification
 
+> **[Live Demo](https://xray.agentnow.org/)** - Try the deployed model
+
 A production-ready deep learning solution for classifying chest X-ray images into three categories:
 - **Normal** - Healthy chest X-rays
 - **Pneumonia** - X-rays showing pneumonia infection
@@ -76,9 +78,10 @@ docker run -p 8000:8000 xray-classifier
 
 | Metric | Score |
 |--------|-------|
-| Accuracy | TBD |
-| Macro F1 | TBD |
-| AUC-ROC | TBD |
+| Accuracy | 77.1% |
+| Macro AUC-ROC | 90.8% |
+| Pneumonia AUC | 98.7% |
+| Test Samples | 2,569 |
 
 ## 🔬 Methodology
 

@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Mei Chen"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -27,9 +27,10 @@ classifiers = [
 keywords = ["deep-learning", "medical-imaging", "x-ray", "classification", "pytorch"]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/xray_classification"
-Documentation = "https://github.com/yourusername/xray_classification#readme"
-Issues = "https://github.com/yourusername/xray_classification/issues"
+Homepage = "https://github.com/mei-chen/xray_classification"
+Demo = "https://xray.agentnow.org/"
+Documentation = "https://github.com/mei-chen/xray_classification#readme"
+Issues = "https://github.com/mei-chen/xray_classification/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

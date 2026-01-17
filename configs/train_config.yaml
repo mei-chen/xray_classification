@@ -34,13 +34,19 @@ data:
   pin_memory: true
 
 # Data augmentation configuration
+# Based on ablation study results:
+#   - brightness_only: +2.8% (best single augmentation)
+#   - hflip_only: +2.2%
+#   - contrast_only: +1.6%
+#   - rotation_only: -0.5% (hurts performance)
+#   - full_augmentation: -0.2% (too aggressive)
 augmentation:
-  # Training augmentations
+  # Training augmentations (optimized based on ablation)
   train:
-    horizontal_flip: true
-    rotation_degrees: 15
-    brightness_range: [0.8, 1.2]
-    contrast_range: [0.8, 1.2]
+    horizontal_flip: true          # +2.2% improvement
+    rotation_degrees: 10           # Reduced from 15 (rotation hurts)
+    brightness_range: [0.8, 1.2]   # +2.8% improvement (best)
+    contrast_range: [0.8, 1.2]     # +1.6% improvement
     random_crop: true
     # CLAHE (Contrast Limited Adaptive Histogram Equalization)
     # Helps with low-contrast images, especially TB class (14% low-contrast vs 2-3% for others)

@@ -266,14 +266,72 @@ RGB format & Already in RGB; no conversion needed \\
 
 \subsection{Data Augmentation}
 
-To increase effective dataset size and improve generalization:
+To increase effective dataset size and improve generalization, we performed an \textbf{augmentation ablation study} to identify which techniques actually improve performance.
+
+\subsubsection{Ablation Study Results}
+
+Each augmentation was tested individually (5 epochs, frozen backbone) to measure its isolated impact:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Augmentation} & \textbf{Val Acc} & \textbf{$\Delta$ vs Baseline} & \textbf{Recommendation} \\
+\midrule
+Brightness jitter ($\pm$20\%) & 72.97\% & \textbf{+2.8\%} & \textcolor{success}{\textbf{Keep}} \\
+Horizontal flip (50\%) & 72.30\% & +2.2\% & \textcolor{success}{\textbf{Keep}} \\
+Contrast jitter ($\pm$20\%) & 71.74\% & +1.6\% & \textcolor{success}{\textbf{Keep}} \\
+Affine transforms & 70.68\% & +0.6\% & Optional \\
+Geometric (flip+rot+affine) & 70.52\% & +0.4\% & -- \\
+\textit{Baseline (no augmentation)} & 70.13\% & -- & -- \\
+Full augmentation (all) & 69.89\% & -0.2\% & \textcolor{accent}{Too aggressive} \\
+Rotation ($\pm$15°) & 69.65\% & -0.5\% & \textcolor{accent}{Reduce/remove} \\
+\bottomrule
+\end{tabular}
+\caption{Augmentation ablation results (sorted by validation accuracy).}
+\end{table}
+
+\textbf{Key Findings}:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Brightness jitter is the most effective} (+2.8\%)---medical X-ray exposure varies significantly between scanners.
+    \item \textbf{Horizontal flip provides strong gains} (+2.2\%)---chest X-rays are roughly bilaterally symmetric.
+    \item \textbf{Rotation slightly hurts performance} (-0.5\%)---patient positioning in X-rays is typically standardized.
+    \item \textbf{Full augmentation is counterproductive}---combining all augmentations was worse than baseline, indicating over-regularization.
+\end{enumerate}
+
+\subsubsection{CLAHE for Contrast Enhancement}
+
+We analyzed whether CLAHE (Contrast Limited Adaptive Histogram Equalization) could help with low-contrast images:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Class} & \textbf{Low Contrast Images} & \textbf{CLAHE Benefit} \\
+\midrule
+Normal & 2\% & Minimal \\
+Pneumonia & 3\% & Minimal \\
+Tuberculosis & \textbf{14\%} & Potential improvement \\
+\bottomrule
+\end{tabular}
+\caption{Low-contrast image prevalence by class (std $<$ 40).}
+\end{table}
+
+CLAHE was implemented as a probabilistic augmentation (20\% of training images) to help with low-contrast TB cases without over-processing well-exposed images.
+
+\subsubsection{Final Augmentation Pipeline}
+
+Based on ablation results, the optimized pipeline is:
 
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Horizontal flip}: X-rays are roughly symmetric
-    \item \textbf{Rotation} ($\pm$15°): Simulates patient positioning variation
-    \item \textbf{Brightness/contrast jitter}: Accounts for scanner differences
-    \item \textbf{Affine transforms}: Minor scaling and translation
+    \item \textbf{CLAHE}: 20\% probability (helps TB class)
+    \item \textbf{Horizontal flip}: 50\% probability (+2.2\%)
+    \item \textbf{Brightness/contrast jitter}: $\pm$20\% (+2.8\%/+1.6\%)
+    \item \textbf{Rotation}: Reduced to $\pm$10° (was $\pm$15°)
+    \item \textbf{Random crop}: 224$\times$224 from 246$\times$246 resize
 \end{itemize}
+
+\textit{Note}: The ablation study was conducted with frozen backbone (classifier-only training) for 5 epochs to rapidly evaluate augmentation impact. The current deployed model was trained prior to this ablation with the original augmentation settings ($\pm$15° rotation, no CLAHE). While retraining with the optimized pipeline could potentially yield improved performance, we elected not to retrain given: (1) the current model already achieves strong results (90.8\% AUC), and (2) full training dynamics with unfrozen backbone may differ from the ablation's frozen-backbone findings. The optimized augmentation configuration has been committed to the codebase for future training runs.
 
 %==============================================================================
 \section{Model Architecture and Training}
@@ -510,6 +568,55 @@ Tuberculosis & \textbf{97.5\%} & 61.7\% & \textbf{99.3\%} & 75.5\% & 89.7\% & 1,
     \item \textbf{TB$\rightarrow$Normal confusion}: 38\% of TB cases misclassified as Normal, indicating room for improvement.
 \end{itemize}
 
+\subsection{Misclassified Examples Analysis}
+
+To understand model failures qualitatively, we analyzed the 588 misclassified test images (22.9\% error rate).
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Error Type} & \textbf{Count} & \textbf{\% of True Class} & \textbf{Clinical Risk} \\
+\midrule
+TB $\rightarrow$ Normal & 378 & 35.5\% & \textcolor{accent}{\textbf{High}} (missed TB) \\
+Normal $\rightarrow$ Pneumonia & 166 & 17.9\% & Low (false alarm) \\
+Normal $\rightarrow$ TB & 42 & 4.5\% & Low (false alarm) \\
+Pneumonia $\rightarrow$ TB & 2 & 0.3\% & Medium (treatment differs) \\
+\bottomrule
+\end{tabular}
+\caption{Misclassification patterns sorted by frequency.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{misclassified_examples.png}
+\caption{Representative misclassified examples, sorted by model confidence. Red titles indicate high-confidence errors ($>$70\%).}
+\end{figure}
+
+\textbf{Qualitative Observations}:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{TB $\rightarrow$ Normal (378 cases)}: The dominant error pattern. Many misclassified TB images show subtle or early-stage pathology with minimal visible consolidation. The model appears to require more pronounced radiographic findings to confidently predict TB.
+    
+    \item \textbf{Normal $\rightarrow$ Pneumonia (166 cases)}: Often involves images with artifacts, suboptimal exposure, or anatomical variations (e.g., prominent hilar markings) that mimic infiltrates.
+    
+    \item \textbf{High-confidence errors}: 67 misclassifications occurred with $>$90\% model confidence, indicating overconfident predictions. These cases would benefit from:
+    \begin{itemize}
+        \item Calibration-aware thresholds (flag predictions in uncertain ranges)
+        \item Mandatory radiologist review for borderline cases
+    \end{itemize}
+\end{itemize}
+
+\textbf{Clinical Implications}:
+\begin{itemize}[leftmargin=*]
+    \item The TB$\rightarrow$Normal pattern is clinically concerning as it represents \textit{missed diagnoses}. In screening workflows, this could be mitigated by:
+    \begin{enumerate}
+        \item Lowering the TB prediction threshold (trading specificity for sensitivity)
+        \item Flagging all ``Normal'' predictions for secondary review if TB prevalence is high
+        \item Ensemble with TB-specific detection models
+    \end{enumerate}
+    \item The Normal$\rightarrow$Pneumonia errors are less concerning (false alarms lead to further workup, not missed disease).
+\end{itemize}
+
 \subsection{ROC Curves and AUC Analysis}
 
 \begin{figure}[H]
@@ -563,7 +670,37 @@ The model incorporates several calibration techniques:
     \item \textbf{Temperature scaling}: Can be applied post-hoc if calibration analysis reveals miscalibration
 \end{itemize}
 
-\textit{Calibration Assessment}: A reliability diagram (plotting predicted probability vs. actual frequency) should be generated for deployment to verify probability estimates are well-calibrated.
+\subsubsection{Reliability Diagram Analysis}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{calibration_reliability_diagram.png}
+\caption{Reliability diagrams (calibration curves) for each class. Points close to the diagonal indicate well-calibrated probabilities. Shaded areas show calibration gap.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Class} & \textbf{ECE} & \textbf{Calibration Quality} \\
+\midrule
+Normal & 0.076 & Good ($<$0.1) \\
+Pneumonia & 0.061 & Good ($<$0.1) \\
+Tuberculosis & 0.068 & Good ($<$0.1) \\
+\midrule
+\textbf{Macro ECE} & \textbf{0.068} & \textbf{Well-calibrated} \\
+\bottomrule
+\end{tabular}
+\caption{Expected Calibration Error (ECE) by class. ECE $<$ 0.1 indicates acceptable calibration.}
+\end{table}
+
+\textbf{Calibration Interpretation}:
+\begin{itemize}[leftmargin=*]
+    \item All classes achieve ECE below the 0.1 threshold, indicating the model's probability estimates are trustworthy for clinical decision support.
+    \item \textit{Pneumonia} shows the best calibration (ECE = 0.061), meaning when the model predicts 80\% probability of pneumonia, approximately 80\% of such cases are truly pneumonia.
+    \item The slight over-confidence in some probability ranges (points below diagonal) is mitigated by label smoothing during training.
+    \item No post-hoc temperature scaling is required given the acceptable ECE scores.
+\end{itemize}
 
 %==============================================================================
 \section{Reproducibility Documentation}

@@ -110,3 +110,13 @@ mlruns/
 tmp/
 temp/
 *.tmp
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz

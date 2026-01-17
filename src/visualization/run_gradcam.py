@@ -1,8 +1,12 @@
 """
-Generate Grad-CAM visualizations for chest X-ray classification.
+Generate Grad-CAM and Layer-CAM visualizations for chest X-ray classification.
 
 Creates attention heatmaps showing which regions of the image
 the model focuses on when making predictions.
+
+Supports multiple CAM methods:
+- Grad-CAM: Global average pooling of gradients
+- Layer-CAM: Element-wise spatial weighting (finer-grained)
 """
 
 import argparse
@@ -20,7 +24,7 @@ from tqdm import tqdm
 from src.config import get_device, load_config, set_seed
 from src.data.transforms import get_inference_transforms, denormalize
 from src.models.architecture import load_model
-from src.visualization.visualize import GradCAM
+from src.visualization.visualize import GradCAM, LayerCAM, generate_multi_cam_analysis
 
 # Configure logging
 logging.basicConfig(
@@ -55,15 +59,16 @@ def get_target_layer(model):
     return target_layer
 
 
-def generate_gradcam_grid(
+def generate_cam_grid(
     model,
     image_paths: list[Path],
     class_names: list[str],
     device: torch.device,
     image_size: int = 224,
+    methods: list[str] = None,
     save_path: Path = None,
 ):
-    """Generate a grid of Grad-CAM visualizations.
+    """Generate a grid of CAM visualizations with multiple methods.
     
     Args:
         model: Trained model.
@@ -71,29 +76,32 @@ def generate_gradcam_grid(
         class_names: List of class names.
         device: Device for inference.
         image_size: Image size for preprocessing.
+        methods: List of CAM methods to use (default: ["gradcam", "layercam"])
         save_path: Path to save the figure.
     """
+    if methods is None:
+        methods = ["gradcam", "layercam"]
+    
     n_images = len(image_paths)
+    n_methods = len(methods)
     
     # Get target layer
     target_layer = get_target_layer(model)
     if target_layer is None:
         raise ValueError("Could not find target convolution layer")
     
-    # Create Grad-CAM instance
-    gradcam = GradCAM(model, target_layer)
-    
     # Prepare transforms
     transform = get_inference_transforms(image_size=image_size)
     
-    # Create figure
-    fig, axes = plt.subplots(n_images, 4, figsize=(16, 4 * n_images))
+    # Create figure: Original + (heatmap + overlay) for each method + probabilities
+    n_cols = 1 + 2 * n_methods + 1
+    fig, axes = plt.subplots(n_images, n_cols, figsize=(4 * n_cols, 4 * n_images))
     if n_images == 1:
         axes = axes.reshape(1, -1)
     
     model.eval()
     
-    for idx, image_path in enumerate(tqdm(image_paths, desc="Generating Grad-CAM")):
+    for idx, image_path in enumerate(tqdm(image_paths, desc="Generating CAMs")):
         # Load image
         image = Image.open(image_path).convert("RGB")
         input_tensor = transform(image).unsqueeze(0).to(device)
@@ -103,17 +111,6 @@ def generate_gradcam_grid(
             output = model(input_tensor)
             probs = F.softmax(output, dim=1)[0]
             pred_class = output.argmax(dim=1).item()
-        
-        # Generate Grad-CAM
-        cam = gradcam.generate(input_tensor, pred_class)
-        
-        # Resize CAM
-        cam_resized = np.array(
-            Image.fromarray((cam * 255).astype(np.uint8)).resize(
-                (image_size, image_size),
-                Image.BILINEAR,
-            )
-        ) / 255.0
         
         # Prepare image for display
         img_display = np.array(image.resize((image_size, image_size)))
@@ -136,38 +133,71 @@ def generate_gradcam_grid(
         axes[idx, 0].set_title(f"Original\nTrue: {true_class}", fontsize=10)
         axes[idx, 0].axis("off")
         
-        # Plot Grad-CAM heatmap
-        axes[idx, 1].imshow(cam_resized, cmap="jet")
-        axes[idx, 1].set_title("Grad-CAM Heatmap", fontsize=10)
-        axes[idx, 1].axis("off")
-        
-        # Plot overlay
-        heatmap_colored = plt.cm.jet(cam_resized)[:, :, :3]
-        overlay = 0.5 * img_normalized + 0.5 * heatmap_colored
-        overlay = np.clip(overlay, 0, 1)
-        
-        axes[idx, 2].imshow(overlay)
-        axes[idx, 2].set_title("Overlay", fontsize=10)
-        axes[idx, 2].axis("off")
+        # Generate CAMs for each method
+        col_idx = 1
+        for method in methods:
+            # Create CAM instance
+            if method.lower() == "gradcam":
+                cam_instance = GradCAM(model, target_layer)
+                method_name = "Grad-CAM"
+            elif method.lower() == "layercam":
+                cam_instance = LayerCAM(model, target_layer)
+                method_name = "Layer-CAM"
+            else:
+                raise ValueError(f"Unknown CAM method: {method}")
+            
+            # Generate CAM
+            cam = cam_instance.generate(input_tensor, pred_class)
+            
+            # Resize CAM
+            cam_resized = np.array(
+                Image.fromarray((cam * 255).astype(np.uint8)).resize(
+                    (image_size, image_size),
+                    Image.BILINEAR,
+                )
+            ) / 255.0
+            
+            # Plot heatmap
+            axes[idx, col_idx].imshow(cam_resized, cmap="jet")
+            if idx == 0:
+                axes[idx, col_idx].set_title(f"{method_name}\nHeatmap", fontsize=10, fontweight='bold')
+            else:
+                axes[idx, col_idx].set_title("")
+            axes[idx, col_idx].axis("off")
+            col_idx += 1
+            
+            # Plot overlay
+            heatmap_colored = plt.cm.jet(cam_resized)[:, :, :3]
+            overlay = 0.5 * img_normalized + 0.5 * heatmap_colored
+            overlay = np.clip(overlay, 0, 1)
+            
+            axes[idx, col_idx].imshow(overlay)
+            if idx == 0:
+                axes[idx, col_idx].set_title(f"{method_name}\nOverlay", fontsize=10, fontweight='bold')
+            else:
+                axes[idx, col_idx].set_title("")
+            axes[idx, col_idx].axis("off")
+            col_idx += 1
         
         # Plot probability distribution
         y_pos = np.arange(len(class_names))
         probs_np = probs.cpu().numpy()
-        colors = ['#2ecc71' if i == pred_class else '#3498db' for i in range(len(class_names))]
+        bar_colors = ['#2ecc71' if i == pred_class else '#3498db' for i in range(len(class_names))]
         
-        axes[idx, 3].barh(y_pos, probs_np, color=colors)
-        axes[idx, 3].set_yticks(y_pos)
-        axes[idx, 3].set_yticklabels(class_names)
-        axes[idx, 3].set_xlim(0, 1)
-        axes[idx, 3].set_title(
-            f"Pred: {class_names[pred_class]} ({probs_np[pred_class]:.1%})",
+        axes[idx, col_idx].barh(y_pos, probs_np, color=bar_colors)
+        axes[idx, col_idx].set_yticks(y_pos)
+        axes[idx, col_idx].set_yticklabels(class_names)
+        axes[idx, col_idx].set_xlim(0, 1)
+        axes[idx, col_idx].set_title(
+            f"Pred: {class_names[pred_class]}\n({probs_np[pred_class]:.1%})",
             fontsize=10,
             color=color,
         )
-        axes[idx, 3].set_xlabel("Probability")
+        axes[idx, col_idx].set_xlabel("Probability")
     
+    method_names = " & ".join([m.upper() for m in methods])
     plt.suptitle(
-        "Grad-CAM Explainability Analysis\n"
+        f"{method_names} Explainability Analysis\n"
         "(Bright regions = high importance for prediction)",
         fontsize=14,
         fontweight="bold",
@@ -176,9 +206,33 @@ def generate_gradcam_grid(
     
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        logger.info(f"Saved Grad-CAM grid to: {save_path}")
+        logger.info(f"Saved CAM grid to: {save_path}")
     
     plt.close()
+
+
+# Keep backward compatibility
+def generate_gradcam_grid(
+    model,
+    image_paths: list[Path],
+    class_names: list[str],
+    device: torch.device,
+    image_size: int = 224,
+    save_path: Path = None,
+):
+    """Generate a grid of Grad-CAM visualizations (backward compatible).
+    
+    This is a wrapper around generate_cam_grid for backward compatibility.
+    """
+    generate_cam_grid(
+        model=model,
+        image_paths=image_paths,
+        class_names=class_names,
+        device=device,
+        image_size=image_size,
+        methods=["gradcam"],
+        save_path=save_path,
+    )
 
 
 def get_sample_images(data_dir: Path, n_per_class: int = 2) -> list[Path]:
@@ -220,9 +274,9 @@ def get_sample_images(data_dir: Path, n_per_class: int = 2) -> list[Path]:
 
 
 def main():
-    """Main entry point for Grad-CAM visualization."""
+    """Main entry point for CAM visualization."""
     parser = argparse.ArgumentParser(
-        description="Generate Grad-CAM visualizations for chest X-ray classifier"
+        description="Generate Grad-CAM and Layer-CAM visualizations for chest X-ray classifier"
     )
     parser.add_argument(
         "--config",
@@ -258,6 +312,14 @@ def main():
         "--image",
         type=str,
         help="Path to a specific image (overrides random sampling)",
+    )
+    parser.add_argument(
+        "--methods",
+        type=str,
+        nargs="+",
+        default=["gradcam", "layercam"],
+        choices=["gradcam", "layercam"],
+        help="CAM methods to use (default: gradcam layercam)",
     )
     parser.add_argument(
         "--seed",
@@ -303,22 +365,25 @@ def main():
         logger.error("No images found!")
         return
     
-    logger.info(f"Generating Grad-CAM for {len(image_paths)} images...")
+    method_names = " & ".join([m.upper() for m in args.methods])
+    logger.info(f"Generating {method_names} for {len(image_paths)} images...")
     
     # Generate visualizations
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    generate_gradcam_grid(
+    # Generate combined CAM grid
+    generate_cam_grid(
         model=model,
         image_paths=image_paths,
         class_names=class_names,
         device=device,
         image_size=config.get("data", {}).get("image_size", 224),
-        save_path=output_dir / "gradcam_analysis.png",
+        methods=args.methods,
+        save_path=output_dir / "cam_analysis.png",
     )
     
-    logger.info("Done! Grad-CAM visualizations saved.")
+    logger.info(f"Done! {method_names} visualizations saved to {output_dir / 'cam_analysis.png'}")
 
 
 if __name__ == "__main__":

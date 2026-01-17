@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from src.config import get_device, load_config
 from src.data.transforms import get_inference_transforms
 from src.models.architecture import load_model
-from src.visualization.visualize import GradCAM
+from src.visualization.visualize import GradCAM, LayerCAM
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +45,8 @@ device = None
 class_names = None
 config = None
 gradcam_instance = None
+layercam_instance = None
+target_layer = None
 
 
 class PredictionResponse(BaseModel):
@@ -94,9 +96,22 @@ class ExplainResponse(BaseModel):
     heatmap_image: str = Field(..., description="Base64-encoded heatmap image (PNG)")
 
 
+class MultiCAMResponse(BaseModel):
+    """Response model for multi-method CAM explainability."""
+    
+    predicted_class: str = Field(..., description="Predicted class label")
+    confidence: float = Field(..., ge=0, le=1, description="Prediction confidence")
+    probabilities: dict[str, float] = Field(..., description="Probabilities for all classes")
+    inference_time_ms: float = Field(..., description="Inference time in milliseconds")
+    gradcam_overlay: str = Field(..., description="Base64-encoded Grad-CAM overlay (PNG)")
+    gradcam_heatmap: str = Field(..., description="Base64-encoded Grad-CAM heatmap (PNG)")
+    layercam_overlay: str = Field(..., description="Base64-encoded Layer-CAM overlay (PNG)")
+    layercam_heatmap: str = Field(..., description="Base64-encoded Layer-CAM heatmap (PNG)")
+
+
 def load_model_on_startup():
     """Load the model during application startup."""
-    global model, transform, device, class_names, config, gradcam_instance
+    global model, transform, device, class_names, config, gradcam_instance, layercam_instance, target_layer
     
     # Try to load deploy config, fall back to train config
     config_path = Path("configs/deploy_config.yaml")
@@ -139,7 +154,7 @@ def load_model_on_startup():
         logger.error(f"Failed to load model: {e}")
         return
     
-    # Setup Grad-CAM for explainability
+    # Setup CAM instances for explainability
     try:
         target_layer = None
         for name, module in model.backbone.named_modules():
@@ -148,9 +163,10 @@ def load_model_on_startup():
         
         if target_layer is not None:
             gradcam_instance = GradCAM(model, target_layer)
-            logger.info("Grad-CAM initialized for explainability")
+            layercam_instance = LayerCAM(model, target_layer)
+            logger.info("Grad-CAM and Layer-CAM initialized for explainability")
     except Exception as e:
-        logger.warning(f"Could not initialize Grad-CAM: {e}")
+        logger.warning(f"Could not initialize CAM instances: {e}")
     
     # Setup transforms
     image_size = inference_config.get("image_size", 224)
@@ -536,6 +552,135 @@ async def predict_with_explanation(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Explain error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+@app.post("/predict/explain/compare", response_model=MultiCAMResponse)
+async def predict_with_multi_cam(
+    file: Annotated[UploadFile, File(description="Chest X-ray image file")]
+):
+    """
+    Classify a chest X-ray image with both Grad-CAM and Layer-CAM explainability.
+    
+    Compares two attention visualization methods:
+    - **Grad-CAM**: Uses global average pooling of gradients (broader attention regions)
+    - **Layer-CAM**: Uses element-wise spatial weighting (finer-grained attention)
+    
+    **Returns**:
+    - Predicted class and confidence scores
+    - Grad-CAM and Layer-CAM overlays and heatmaps as Base64-encoded PNGs
+    
+    **Note**: This endpoint is slower than single-method explainability due to multiple CAM computations.
+    """
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded.",
+        )
+    
+    if gradcam_instance is None or layercam_instance is None:
+        raise HTTPException(
+            status_code=503,
+            detail="CAM instances not initialized. Explainability is unavailable.",
+        )
+    
+    # Validate file type
+    content_type = file.content_type
+    if content_type not in ["image/jpeg", "image/png", "image/gif", "image/bmp"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type: {content_type}. Supported: JPEG, PNG, GIF, BMP",
+        )
+    
+    try:
+        start_time = time.time()
+        
+        # Read and preprocess image
+        image_bytes = await file.read()
+        original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        image_tensor = transform(original_image).unsqueeze(0).to(device)
+        
+        # Get prediction
+        model.eval()
+        with torch.no_grad():
+            outputs = model(image_tensor)
+            probs = F.softmax(outputs, dim=1)[0]
+            pred_idx = outputs.argmax(dim=1).item()
+        
+        predicted_class = class_names[pred_idx]
+        confidence = probs[pred_idx].item()
+        probabilities = {
+            name: probs[i].item()
+            for i, name in enumerate(class_names)
+        }
+        
+        # Get image size from config
+        inference_config = config.get("inference", config.get("data", {}))
+        image_size = inference_config.get("image_size", 224)
+        
+        # Prepare original image for overlay
+        img_resized = original_image.resize((image_size, image_size))
+        img_array = np.array(img_resized).astype(np.float32) / 255.0
+        
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        def process_cam(cam_instance, name: str):
+            """Generate CAM and return overlay + heatmap images."""
+            cam = cam_instance.generate(image_tensor, pred_idx)
+            
+            # Resize CAM to image size
+            cam_resized = np.array(
+                Image.fromarray((cam * 255).astype(np.uint8)).resize(
+                    (image_size, image_size),
+                    Image.BILINEAR,
+                )
+            ) / 255.0
+            
+            # Generate heatmap image
+            heatmap_colored = plt.cm.jet(cam_resized)[:, :, :3]
+            heatmap_img = Image.fromarray((heatmap_colored * 255).astype(np.uint8))
+            
+            # Create overlay (original + heatmap)
+            overlay = 0.5 * img_array + 0.5 * heatmap_colored
+            overlay = np.clip(overlay, 0, 1)
+            overlay_img = Image.fromarray((overlay * 255).astype(np.uint8))
+            
+            return overlay_img, heatmap_img
+        
+        # Generate both CAMs
+        gradcam_overlay, gradcam_heatmap = process_cam(gradcam_instance, "Grad-CAM")
+        layercam_overlay, layercam_heatmap = process_cam(layercam_instance, "Layer-CAM")
+        
+        # Convert images to base64
+        def image_to_base64(img: Image.Image) -> str:
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG")
+            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        
+        inference_time = (time.time() - start_time) * 1000
+        
+        logger.info(
+            f"Multi-CAM Explain: {predicted_class} ({confidence:.2%}) - "
+            f"Time: {inference_time:.1f}ms"
+        )
+        
+        return MultiCAMResponse(
+            predicted_class=predicted_class,
+            confidence=confidence,
+            probabilities=probabilities,
+            inference_time_ms=round(inference_time, 2),
+            gradcam_overlay=image_to_base64(gradcam_overlay),
+            gradcam_heatmap=image_to_base64(gradcam_heatmap),
+            layercam_overlay=image_to_base64(layercam_overlay),
+            layercam_heatmap=image_to_base64(layercam_heatmap),
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Multi-CAM explain error: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 

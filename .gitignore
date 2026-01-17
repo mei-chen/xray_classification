@@ -60,10 +60,10 @@ dmypy.json
 .ruff_cache/
 
 # Data files (large datasets should not be in git)
-data/raw/
-data/processed/
-data/interim/
-data/external/
+# data/raw/
+# data/processed/
+# data/interim/
+# data/external/
 *.csv
 *.parquet
 *.h5

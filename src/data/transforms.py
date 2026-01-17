@@ -7,8 +7,82 @@ including careful handling of intensity normalization and geometric transforms.
 
 from typing import Any
 
+import cv2
+import numpy as np
 import torch
+from PIL import Image
 from torchvision import transforms
+
+
+class RandomCLAHE:
+    """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) randomly.
+    
+    CLAHE enhances local contrast, particularly useful for medical images
+    with low contrast regions. Applied to the L channel in LAB color space
+    to preserve color information.
+    
+    Note: CLAHE object is created lazily in __call__ to support multiprocessing
+    (cv2.CLAHE objects cannot be pickled).
+    
+    Args:
+        p: Probability of applying CLAHE (default: 0.2)
+        clip_limit: Contrast limiting threshold (default: 2.0)
+        tile_grid_size: Size of grid for histogram equalization (default: (8, 8))
+    """
+    
+    def __init__(
+        self,
+        p: float = 0.2,
+        clip_limit: float = 2.0,
+        tile_grid_size: tuple[int, int] = (8, 8),
+    ):
+        self.p = p
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+        # Don't create CLAHE here - it can't be pickled for multiprocessing
+        self._clahe = None
+    
+    def _get_clahe(self):
+        """Lazily create CLAHE object (for multiprocessing compatibility)."""
+        if self._clahe is None:
+            self._clahe = cv2.createCLAHE(
+                clipLimit=self.clip_limit,
+                tileGridSize=self.tile_grid_size,
+            )
+        return self._clahe
+    
+    def __call__(self, img: Image.Image) -> Image.Image:
+        """Apply CLAHE with probability p.
+        
+        Args:
+            img: PIL Image (RGB)
+            
+        Returns:
+            PIL Image with CLAHE applied (or unchanged if not triggered)
+        """
+        if np.random.random() > self.p:
+            return img
+        
+        # Convert PIL to numpy
+        img_np = np.array(img)
+        
+        # Convert RGB to LAB
+        lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+        
+        # Apply CLAHE to L channel (luminance) - create lazily for pickling
+        clahe = self._get_clahe()
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        
+        # Convert back to RGB
+        result = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        return Image.fromarray(result)
+    
+    def __getstate__(self):
+        """Remove unpicklable CLAHE object for multiprocessing."""
+        state = self.__dict__.copy()
+        state['_clahe'] = None
+        return state
 
 
 def get_train_transforms(
@@ -20,6 +94,7 @@ def get_train_transforms(
     """Get training data augmentation pipeline.
     
     Applies a series of augmentations designed for medical imaging:
+    - Random CLAHE for contrast enhancement (helps low-contrast images)
     - Random horizontal flip (chest X-rays are roughly symmetric)
     - Random rotation (small angles to simulate patient positioning)
     - Color jitter for brightness/contrast (simulate different exposure settings)
@@ -44,8 +119,13 @@ def get_train_transforms(
     rotation_degrees = augmentation_config.get("rotation_degrees", 15)
     brightness_range = augmentation_config.get("brightness_range", [0.8, 1.2])
     contrast_range = augmentation_config.get("contrast_range", [0.8, 1.2])
+    clahe_probability = augmentation_config.get("clahe_probability", 0.2)
     
     transform_list = [
+        # CLAHE for contrast enhancement (especially helps low-contrast TB images)
+        # Applied early before geometric transforms to enhance on original resolution
+        RandomCLAHE(p=clahe_probability, clip_limit=2.0, tile_grid_size=(8, 8)),
+        
         # Resize to slightly larger for random cropping
         transforms.Resize(int(image_size * 1.1)),
         

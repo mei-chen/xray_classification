@@ -42,6 +42,9 @@ augmentation:
     brightness_range: [0.8, 1.2]
     contrast_range: [0.8, 1.2]
     random_crop: true
+    # CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    # Helps with low-contrast images, especially TB class (14% low-contrast vs 2-3% for others)
+    clahe_probability: 0.2  # Apply to 20% of training images
     normalize:
       mean: [0.485, 0.456, 0.406]  # ImageNet stats
       std: [0.229, 0.224, 0.225]
@@ -79,6 +82,9 @@ training:
     learning_rate: 0.001
     weight_decay: 0.01
     betas: [0.9, 0.999]
+    # Differential learning rate: backbone LR = learning_rate * backbone_lr_factor
+    # Lower factor means backbone learns slower (preserves pretrained features)
+    backbone_lr_factor: 0.1  # 10x lower LR for backbone when unfreezing
   
   # Learning rate scheduler
   scheduler:
@@ -98,12 +104,18 @@ training:
   # Gradient clipping
   gradient_clip_val: 1.0
   
-  # Early stopping
+  # Smart early stopping with optimal model detection
   early_stopping:
     enabled: true
-    patience: 10
+    patience: 10                  # Stop if no improvement for N epochs
+    min_delta: 0.001              # Minimum improvement to count as progress
     monitor: "val_f1"
     mode: "max"
+    # Advanced stopping criteria
+    overfitting_patience: 5       # Stop if overfitting detected for N epochs
+    overfitting_threshold: 0.05   # Gap threshold to consider overfitting (5%)
+    convergence_threshold: 0.002  # Std dev threshold for convergence detection
+    convergence_window: 5         # Window size for convergence check
   
   # Model checkpointing
   checkpoint:

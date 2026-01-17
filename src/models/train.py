@@ -4,8 +4,11 @@ Training pipeline for chest X-ray classification.
 Implements a complete training loop with:
 - Mixed precision training
 - Learning rate scheduling with warmup
+- Differential learning rates for backbone vs classifier
 - Early stopping
 - Model checkpointing
+- Training/validation curves
+- Generalization gap analysis
 - Comprehensive logging
 """
 
@@ -17,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -93,24 +97,45 @@ class Trainer:
         # Setup mixed precision
         self.scaler = GradScaler() if self.use_amp else None
         
-        # Early stopping
+        # Early stopping with smart optimal model detection
         es_config = train_config.get("early_stopping", {})
         self.early_stopping_enabled = es_config.get("enabled", True)
         self.patience = es_config.get("patience", 10)
+        self.min_delta = es_config.get("min_delta", 0.001)  # Minimum improvement to count
         self.best_metric = 0.0
+        self.best_val_loss = float("inf")
+        self.best_epoch = 0
         self.epochs_without_improvement = 0
+        
+        # Smart stopping criteria
+        self.overfitting_patience = es_config.get("overfitting_patience", 5)
+        self.overfitting_threshold = es_config.get("overfitting_threshold", 0.05)
+        self.convergence_threshold = es_config.get("convergence_threshold", 0.002)
+        self.convergence_window = es_config.get("convergence_window", 5)
+        
+        # Tracking for optimal model detection
+        self.consecutive_overfitting_epochs = 0
+        self.stop_reason = None
         
         # Checkpointing
         self.checkpoint_dir = Path(config.get("paths", {}).get("model_dir", "models"))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        # Training history
+        # Figures directory
+        self.figures_dir = Path(config.get("paths", {}).get("figures_dir", "reports/figures"))
+        self.figures_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Training history with generalization gap tracking
         self.history = {
             "train_loss": [],
             "val_loss": [],
             "train_f1": [],
             "val_f1": [],
             "learning_rate": [],
+            "generalization_gap_loss": [],
+            "generalization_gap_f1": [],
+            "backbone_lr": [],
+            "classifier_lr": [],
         }
     
     def _setup_loss_function(self, loss_config: dict):
@@ -129,18 +154,59 @@ class Trainer:
             label_smoothing=label_smoothing,
         )
     
-    def _setup_optimizer(self, opt_config: dict):
-        """Setup the optimizer."""
+    def _setup_optimizer(self, opt_config: dict, use_differential_lr: bool = False):
+        """Setup the optimizer with optional differential learning rates.
+        
+        Args:
+            opt_config: Optimizer configuration dictionary.
+            use_differential_lr: If True, use lower LR for backbone, higher for classifier.
+        """
         self.learning_rate = opt_config.get("learning_rate", 0.001)
         weight_decay = opt_config.get("weight_decay", 0.01)
         betas = tuple(opt_config.get("betas", [0.9, 0.999]))
         
-        self.optimizer = AdamW(
-            self.model.parameters(),
-            lr=self.learning_rate,
-            weight_decay=weight_decay,
-            betas=betas,
-        )
+        # Differential learning rate factor (backbone LR = base LR * factor)
+        self.backbone_lr_factor = opt_config.get("backbone_lr_factor", 0.1)
+        
+        if use_differential_lr:
+            # Separate parameter groups for backbone and classifier
+            backbone_params = list(self.model.backbone.parameters())
+            classifier_params = list(self.model.classifier.parameters())
+            
+            backbone_lr = self.learning_rate * self.backbone_lr_factor
+            classifier_lr = self.learning_rate
+            
+            param_groups = [
+                {
+                    "params": backbone_params,
+                    "lr": backbone_lr,
+                    "name": "backbone",
+                },
+                {
+                    "params": classifier_params,
+                    "lr": classifier_lr,
+                    "name": "classifier",
+                },
+            ]
+            
+            self.optimizer = AdamW(
+                param_groups,
+                weight_decay=weight_decay,
+                betas=betas,
+            )
+            
+            logger.info(f"Using differential learning rates:")
+            logger.info(f"  Backbone LR: {backbone_lr:.2e} ({len(backbone_params)} param tensors)")
+            logger.info(f"  Classifier LR: {classifier_lr:.2e} ({len(classifier_params)} param tensors)")
+        else:
+            # Standard optimizer with single learning rate
+            self.optimizer = AdamW(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=weight_decay,
+                betas=betas,
+            )
+            logger.info(f"Using uniform learning rate: {self.learning_rate:.2e}")
     
     def _setup_scheduler(self, sched_config: dict):
         """Setup learning rate scheduler with warmup."""
@@ -285,6 +351,124 @@ class Trainer:
         
         return avg_loss, f1, report
     
+    def plot_training_curves(self):
+        """Generate and save training/validation curves with generalization gap analysis."""
+        if len(self.history["train_loss"]) == 0:
+            logger.warning("No training history to plot")
+            return
+        
+        epochs = range(1, len(self.history["train_loss"]) + 1)
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        # Loss curves
+        ax = axes[0, 0]
+        ax.plot(epochs, self.history["train_loss"], "b-", label="Train Loss", linewidth=2)
+        ax.plot(epochs, self.history["val_loss"], "r-", label="Val Loss", linewidth=2)
+        ax.fill_between(epochs, self.history["train_loss"], self.history["val_loss"], 
+                       alpha=0.2, color="gray", label="Gap")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.set_title("Training vs Validation Loss")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # F1 curves
+        ax = axes[0, 1]
+        ax.plot(epochs, self.history["train_f1"], "b-", label="Train F1", linewidth=2)
+        ax.plot(epochs, self.history["val_f1"], "r-", label="Val F1", linewidth=2)
+        ax.fill_between(epochs, self.history["train_f1"], self.history["val_f1"], 
+                       alpha=0.2, color="gray", label="Gen. Gap")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("F1 Score")
+        ax.set_title("Training vs Validation F1")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Generalization gap over time
+        ax = axes[1, 0]
+        if self.history["generalization_gap_f1"]:
+            ax.plot(epochs, self.history["generalization_gap_f1"], "purple", 
+                   linewidth=2, marker="o", markersize=4)
+            ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+            ax.fill_between(epochs, 0, self.history["generalization_gap_f1"], 
+                           alpha=0.3, color="purple")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Gap (Train F1 - Val F1)")
+        ax.set_title("Generalization Gap Over Training")
+        ax.grid(True, alpha=0.3)
+        
+        # Learning rate schedule (with differential LR if used)
+        ax = axes[1, 1]
+        ax.plot(epochs, self.history["learning_rate"], "g-", linewidth=2, label="Primary LR")
+        if any(self.history["backbone_lr"]):
+            ax.plot(epochs, self.history["backbone_lr"], "b--", linewidth=2, label="Backbone LR")
+            ax.plot(epochs, self.history["classifier_lr"], "r--", linewidth=2, label="Classifier LR")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Learning Rate")
+        ax.set_title("Learning Rate Schedule")
+        ax.set_yscale("log")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        save_path = self.figures_dir / "training_curves.png"
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        
+        logger.info(f"Saved training curves to: {save_path}")
+    
+    def analyze_generalization_gap(self) -> dict:
+        """Analyze generalization gap and detect overfitting/underfitting.
+        
+        Returns:
+            Dictionary with gap analysis results.
+        """
+        if len(self.history["train_f1"]) < 2:
+            return {}
+        
+        train_f1 = np.array(self.history["train_f1"])
+        val_f1 = np.array(self.history["val_f1"])
+        gap = train_f1 - val_f1
+        
+        analysis = {
+            "final_train_f1": float(train_f1[-1]),
+            "final_val_f1": float(val_f1[-1]),
+            "final_gap": float(gap[-1]),
+            "max_gap": float(np.max(gap)),
+            "mean_gap": float(np.mean(gap)),
+            "gap_trend": "increasing" if len(gap) > 3 and gap[-1] > gap[-3] else "stable",
+        }
+        
+        # Detect overfitting/underfitting
+        if analysis["final_gap"] > 0.1:
+            analysis["diagnosis"] = "OVERFITTING: Large train-val gap suggests overfitting"
+            analysis["recommendation"] = "Increase regularization (dropout, weight decay) or reduce model capacity"
+        elif analysis["final_val_f1"] < 0.6:
+            analysis["diagnosis"] = "UNDERFITTING: Low validation performance suggests underfitting"
+            analysis["recommendation"] = "Increase model capacity, train longer, or reduce regularization"
+        elif analysis["gap_trend"] == "increasing" and analysis["final_gap"] > 0.05:
+            analysis["diagnosis"] = "EARLY_OVERFITTING: Gap is increasing, may overfit soon"
+            analysis["recommendation"] = "Consider early stopping or increasing regularization"
+        else:
+            analysis["diagnosis"] = "HEALTHY: Good generalization with small gap"
+            analysis["recommendation"] = "Training is proceeding well"
+        
+        logger.info("\n" + "=" * 60)
+        logger.info("GENERALIZATION GAP ANALYSIS")
+        logger.info("=" * 60)
+        logger.info(f"Final Train F1: {analysis['final_train_f1']:.4f}")
+        logger.info(f"Final Val F1:   {analysis['final_val_f1']:.4f}")
+        logger.info(f"Final Gap:      {analysis['final_gap']:.4f} ({analysis['final_gap']*100:.1f}%)")
+        logger.info(f"Max Gap:        {analysis['max_gap']:.4f}")
+        logger.info(f"Gap Trend:      {analysis['gap_trend']}")
+        logger.info(f"Diagnosis:      {analysis['diagnosis']}")
+        logger.info(f"Recommendation: {analysis['recommendation']}")
+        logger.info("=" * 60 + "\n")
+        
+        return analysis
+    
     def save_checkpoint(
         self,
         epoch: int,
@@ -342,19 +526,30 @@ class Trainer:
         
         start_time = time.time()
         
+        # Track if we're using differential LR
+        using_differential_lr = False
+        
         for epoch in range(self.epochs):
-            # Progressive unfreezing
+            # Progressive unfreezing with differential learning rates
             if self.freeze_backbone and epoch == self.unfreeze_at_epoch:
                 logger.info(f"Unfreezing backbone at epoch {epoch}")
                 self.model.unfreeze_backbone()
-                # Reset optimizer for unfrozen parameters
-                self._setup_optimizer(self.config.get("training", {}).get("optimizer", {}))
+                # Reset optimizer with differential learning rates for fine-tuning
+                self._setup_optimizer(
+                    self.config.get("training", {}).get("optimizer", {}),
+                    use_differential_lr=True,
+                )
+                using_differential_lr = True
             
             # Training
             train_loss, train_f1 = self.train_epoch(epoch)
             
             # Validation
             val_loss, val_f1, report = self.validate()
+            
+            # Calculate generalization gaps
+            gap_loss = val_loss - train_loss
+            gap_f1 = train_f1 - val_f1
             
             # Log metrics
             current_lr = self.optimizer.param_groups[0]["lr"]
@@ -363,43 +558,171 @@ class Trainer:
             self.history["train_f1"].append(train_f1)
             self.history["val_f1"].append(val_f1)
             self.history["learning_rate"].append(current_lr)
+            self.history["generalization_gap_loss"].append(gap_loss)
+            self.history["generalization_gap_f1"].append(gap_f1)
             
+            # Track differential learning rates if used
+            if using_differential_lr and len(self.optimizer.param_groups) > 1:
+                backbone_lr = self.optimizer.param_groups[0]["lr"]
+                classifier_lr = self.optimizer.param_groups[1]["lr"]
+                self.history["backbone_lr"].append(backbone_lr)
+                self.history["classifier_lr"].append(classifier_lr)
+            else:
+                self.history["backbone_lr"].append(None)
+                self.history["classifier_lr"].append(None)
+            
+            # Enhanced logging with gap info
+            gap_status = "⚠️" if gap_f1 > 0.05 else "✓"
             logger.info(
                 f"Epoch {epoch+1}/{self.epochs} - "
                 f"Train Loss: {train_loss:.4f}, Train F1: {train_f1:.4f} | "
                 f"Val Loss: {val_loss:.4f}, Val F1: {val_f1:.4f} | "
+                f"Gap: {gap_f1:.3f} {gap_status} | "
                 f"LR: {current_lr:.2e}"
             )
             
-            # Checkpointing
-            is_best = val_f1 > self.best_metric
-            if is_best:
-                self.best_metric = val_f1
-                self.epochs_without_improvement = 0
-            else:
-                self.epochs_without_improvement += 1
+            # Smart optimal stopping check
+            should_stop, stop_reason = self.check_optimal_stopping(
+                epoch, train_f1, val_f1, train_loss, val_loss
+            )
             
+            # Checkpointing (is_best is set by check_optimal_stopping)
+            is_best = (val_f1 >= self.best_metric - self.min_delta / 2)
             self.save_checkpoint(epoch, val_f1, is_best)
             
-            # Early stopping
-            if self.early_stopping_enabled:
-                if self.epochs_without_improvement >= self.patience:
-                    logger.info(f"Early stopping at epoch {epoch+1}")
-                    break
+            # Check if we should stop
+            if self.early_stopping_enabled and should_stop:
+                self.stop_reason = stop_reason
+                logger.info(f"\n🛑 Stopping training at epoch {epoch+1}")
+                logger.info(f"   Reason: {stop_reason}")
+                self.log_stopping_summary()
+                break
         
         training_time = time.time() - start_time
+        
+        # If training completed without early stopping
+        if self.stop_reason is None:
+            self.stop_reason = f"COMPLETED: Finished all {self.epochs} epochs"
+            self.log_stopping_summary()
+        
         logger.info("=" * 60)
         logger.info("Training Complete")
-        logger.info(f"Best Val F1: {self.best_metric:.4f}")
+        logger.info(f"Best Val F1: {self.best_metric:.4f} (Epoch {self.best_epoch + 1})")
         logger.info(f"Training Time: {training_time/60:.2f} minutes")
         logger.info("=" * 60)
         
-        # Save final history
+        # Analyze generalization gap
+        gap_analysis = self.analyze_generalization_gap()
+        
+        # Generate training curves
+        self.plot_training_curves()
+        
+        # Save final history with analysis
+        history_with_analysis = {
+            **self.history,
+            "gap_analysis": gap_analysis,
+            "training_time_minutes": training_time / 60,
+            "best_val_f1": self.best_metric,
+        }
+        
         history_path = self.checkpoint_dir / "training_history.json"
         with open(history_path, "w") as f:
-            json.dump(self.history, f, indent=2)
+            # Convert None values to null for JSON
+            json.dump(history_with_analysis, f, indent=2, default=str)
+        
+        logger.info(f"Saved training history to: {history_path}")
         
         return self.history
+    
+    def check_optimal_stopping(self, epoch: int, train_f1: float, val_f1: float, 
+                                train_loss: float, val_loss: float) -> tuple[bool, str]:
+        """Check if we should stop training based on multiple smart criteria.
+        
+        This checks for:
+        1. Standard early stopping (no improvement in patience epochs)
+        2. Overfitting detection (train improves but val degrades)
+        3. Convergence detection (metrics plateau)
+        4. Optimal point passed (val metric starts declining consistently)
+        
+        Args:
+            epoch: Current epoch number.
+            train_f1: Training F1 score.
+            val_f1: Validation F1 score.
+            train_loss: Training loss.
+            val_loss: Validation loss.
+            
+        Returns:
+            Tuple of (should_stop, reason)
+        """
+        # Check 1: Standard improvement check with min_delta
+        improved = val_f1 > self.best_metric + self.min_delta
+        
+        if improved:
+            self.best_metric = val_f1
+            self.best_val_loss = val_loss
+            self.best_epoch = epoch
+            self.epochs_without_improvement = 0
+            self.consecutive_overfitting_epochs = 0
+        else:
+            self.epochs_without_improvement += 1
+        
+        # Check 2: Overfitting detection
+        gap = train_f1 - val_f1
+        if len(self.history["train_f1"]) > 1:
+            prev_gap = self.history["train_f1"][-1] - self.history["val_f1"][-1]
+            # Overfitting: train improving but val degrading, and gap increasing
+            if (gap > self.overfitting_threshold and 
+                gap > prev_gap + 0.01 and
+                train_f1 > self.history["train_f1"][-1]):
+                self.consecutive_overfitting_epochs += 1
+            else:
+                self.consecutive_overfitting_epochs = max(0, self.consecutive_overfitting_epochs - 1)
+            
+            if self.consecutive_overfitting_epochs >= self.overfitting_patience:
+                return True, f"OVERFITTING_DETECTED: Generalization gap ({gap:.3f}) increasing for {self.consecutive_overfitting_epochs} epochs"
+        
+        # Check 3: Convergence detection (metrics stopped changing)
+        if len(self.history["val_f1"]) >= self.convergence_window:
+            recent_val_f1 = self.history["val_f1"][-self.convergence_window:]
+            val_f1_std = np.std(recent_val_f1)
+            val_f1_range = max(recent_val_f1) - min(recent_val_f1)
+            
+            if val_f1_std < self.convergence_threshold and val_f1_range < self.convergence_threshold * 2:
+                # Converged, but check if it's a good convergence
+                if val_f1 >= self.best_metric * 0.99:  # Within 1% of best
+                    return True, f"CONVERGED: Val F1 stable at {val_f1:.4f} (std={val_f1_std:.4f}) - optimal model found"
+        
+        # Check 4: Optimal point passed (val declining while train still good)
+        if len(self.history["val_f1"]) >= 3:
+            recent_val = self.history["val_f1"][-3:]
+            if all(recent_val[i] > recent_val[i+1] for i in range(len(recent_val)-1)):
+                # Val F1 declining for 3 epochs
+                if train_f1 > val_f1 + 0.03:  # And significant gap
+                    return True, f"OPTIMAL_PASSED: Val F1 declining ({recent_val[-1]:.4f} → {val_f1:.4f}) - using best from epoch {self.best_epoch+1}"
+        
+        # Check 5: Standard patience-based early stopping
+        if self.epochs_without_improvement >= self.patience:
+            return True, f"PATIENCE_EXHAUSTED: No improvement for {self.patience} epochs - best was epoch {self.best_epoch+1}"
+        
+        return False, ""
+    
+    def log_stopping_summary(self):
+        """Log a summary when training stops."""
+        logger.info("\n" + "=" * 70)
+        logger.info("🎯 OPTIMAL MODEL DETECTION SUMMARY")
+        logger.info("=" * 70)
+        logger.info(f"Stop Reason: {self.stop_reason}")
+        logger.info(f"Best Epoch: {self.best_epoch + 1}")
+        logger.info(f"Best Val F1: {self.best_metric:.4f}")
+        logger.info(f"Best Val Loss: {self.best_val_loss:.4f}")
+        
+        if len(self.history["val_f1"]) > 0:
+            final_gap = self.history["train_f1"][-1] - self.history["val_f1"][-1]
+            logger.info(f"Final Generalization Gap: {final_gap:.4f} ({final_gap*100:.1f}%)")
+        
+        logger.info("=" * 70)
+        logger.info("✅ Best model saved to: models/best_model.pt")
+        logger.info("=" * 70 + "\n")
 
 
 def main():
